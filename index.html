@@ -310,6 +310,12 @@
   #sentBar .b-new{background:#fff;color:#1f6b3a;}
   #sentBar .b-close{background:transparent;color:#fff;border:1.5px solid rgba(255,255,255,.7);}
   .serial-show{margin-top:8px;font-size:13px;font-weight:700;color:var(--steel);display:none;}
+  .reload-field{background:#f4f7fb;border:1px dashed #b9c6d6;border-radius:10px;padding:10px 12px;}
+  .reload-row{display:flex;gap:8px;}
+  .reload-row input{flex:1;min-width:0;}
+  .reload-row button{flex:0 0 auto;padding:0 18px;border:0;border-radius:8px;background:var(--steel,#3b5b7a);color:#fff;font-weight:700;font-size:15px;cursor:pointer;}
+  .reload-row button:disabled{opacity:.6;}
+  .reload-on{border-color:#e0a030 !important;background:#fff8e6 !important;}
   .seg{display:flex;gap:8px;}
   .seg label{flex:1;margin:0;cursor:pointer;}
   .seg input{position:absolute;opacity:0;pointer-events:none;}
@@ -404,6 +410,14 @@
 
   <div class="card card-info">
     <div class="card-title">基本資訊</div>
+    <div class="field reload-field">
+      <label>修改／重出舊單（輸入流水號）</label>
+      <div class="reload-row">
+        <input type="text" id="reloadInput" placeholder="例如 34-115-0003" autocomplete="off" inputmode="text">
+        <button type="button" id="reloadBtn">叫出</button>
+      </div>
+      <div class="hint" id="reloadHint">新單不用填。要修改已送出的單時，輸入流水號叫出來，改完再按「輸出 PDF」。</div>
+    </div>
     <div class="field">
       <label>請購/修單位</label>
       <select id="unitInput">
@@ -423,6 +437,7 @@
         <option value="">請選擇機具</option>
         <option value="01" data-name="堆高機 3噸">01 · 堆高機 3噸</option>
         <option value="06" data-name="山貓(含斗及掃地機)">06 · 山貓(含斗及掃地機)</option>
+        <option value="08" data-name="堆高機">08 · 堆高機</option>
         <option value="09" data-name="堆高機 4T">09 · 堆高機 4T</option>
         <option value="12" data-name="堆高機 3噸">12 · 堆高機 3噸</option>
         <option value="16" data-name="鏟土機(長手) TCM 2.3噸">16 · 鏟土機(長手) TCM 2.3噸</option>
@@ -989,7 +1004,7 @@ function recalcSubtotal(){
 }
 
 /* 把這次填寫的資料送到 Google 試算表 */
-function sendToCloud(){
+function sendToCloud(mode){
   if(!CLOUD_URL) return; // 未設定就跳過
   try{
     var items=collectItems();
@@ -1015,18 +1030,22 @@ function sendToCloud(){
       serial: SERIAL.serial,
       submittedAt: new Date().toISOString()
     };
-    var sentKey=SERIAL.key;
+    var sentKey=SERIAL.key, sentHash=formHash();
+    if(mode==='update'){ payload.mode='update'; payload.serial=SERIAL.serial; }
     // text/plain：避免預檢；讀取 Google 回覆，確認是否寫入或已重複
     fetch(CLOUD_URL, {
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify(payload)
     }).then(function(r){ return r.json(); }).then(function(j){
+      if(j&&j.error==='not_found'){ showSentBar('台帳裡找不到流水號 '+(j.serial||SERIAL.serial)+'，這次沒有更新。可能已被刪除，請到試算表確認。',true); return; }
       if(!j||!j.ok) throw new Error((j&&j.error)||'bad');
-      if(SERIAL.key===sentKey){ SERIAL.serial=j.serial||SERIAL.serial; SERIAL.sent=true; renderSerial(); }
+      if(j.updated){ SERIAL.hash=sentHash; renderSerial(); showSentBar('✅ 台帳已更新：流水號 '+j.serial+' 改成這次的內容。',false); return; }
+      if(SERIAL.key===sentKey){ SERIAL.hash=sentHash; SERIAL.serial=j.serial||SERIAL.serial; SERIAL.sent=true; renderSerial(); }
       if(j.dup) showSentBar('流水號 '+j.serial+' 已經記錄過，這次沒有重複寫入台帳。',true);
       else showSentBar('✅ 已送出到台帳，流水號 '+j.serial+'。要開新的一張單嗎？',false);
     }).catch(function(){
+      if(mode==='update'){ showSentBar('無法確認台帳是否已更新（可能是網路不穩）。請稍後到試算表確認流水號 '+SERIAL.serial+'。',true); return; }
       if(SERIAL.key===sentKey){ SERIAL.sent=true; renderSerial(); }
       showSentBar('已送出，但無法確認台帳是否收到（可能是網路不穩）。請稍後到試算表確認流水號 '+SERIAL.serial+'。',true);
     });
@@ -1043,13 +1062,14 @@ function serialKey(){
 }
 function renderSerial(){
   var el=document.getElementById('serialShow'); if(!el) return;
-  if(SERIAL.serial && SERIAL.key===serialKey()){
+  if(SERIAL.serial && (SERIAL.loaded || SERIAL.key===serialKey())){
     el.style.display='block';
-    el.textContent='流水號：'+SERIAL.serial+(SERIAL.serial.indexOf('TMP')===0?'（暫時編號，送出後改為正式號碼）':'')+(SERIAL.sent?'｜已送出':'');
+    el.textContent='流水號：'+SERIAL.serial+(SERIAL.serial.indexOf('TMP')===0?'（暫時編號，送出後改為正式號碼）':'')+(SERIAL.loaded?'｜修改舊單':(SERIAL.sent?'｜已送出':''));
   } else { el.style.display='none'; }
 }
 function getSerial(){
   var key=serialKey();
+  if(SERIAL.loaded && SERIAL.serial) return Promise.resolve(SERIAL.serial);   // 叫出的舊單：沿用原流水號
   if(SERIAL.key===key && SERIAL.serial && SERIAL.serial.indexOf('TMP')!==0) return Promise.resolve(SERIAL.serial);
   var mc=getMachine(), d=document.getElementById('dateInput').value;
   var tmp=function(){
@@ -1063,6 +1083,10 @@ function getSerial(){
     .then(function(j){ if(!j||!j.ok||!j.serial) throw new Error('bad'); return j.serial; })
     .catch(function(){ return (SERIAL.key===key && SERIAL.serial)?SERIAL.serial:tmp(); })
     .then(function(sn){ SERIAL={key:key,serial:sn,sent:false}; renderSerial(); return sn; });
+}
+function formHash(){
+  return JSON.stringify([getUnit(),getMachine().no,document.getElementById('dateInput').value,getMethod(),
+    document.getElementById('noteInput').value.trim(),collectItems()]);
 }
 function showSentBar(msg,warn){
   var b=document.getElementById('sentBar');
@@ -1312,7 +1336,8 @@ function clearAll(skipAsk){
   document.getElementById('dateInput').value='';
   document.getElementById('noteInput').value='';
   HIST={key:'',status:'idle',records:[],promise:null}; renderHistStatus();
-  SERIAL={key:'',serial:'',sent:false}; renderSerial(); hideSentBar();
+  SERIAL={key:'',serial:'',sent:false}; renderSerial(); hideSentBar(); setMachineLock(false);
+  var _ri=document.getElementById('reloadInput'); if(_ri){ _ri.value=''; _ri.classList.remove('reload-on'); }
   var _m=document.querySelector('input[name="method"]:checked'); if(_m) _m.checked=false;
   document.getElementById('methodField').classList.remove('need');
   renderPeople(); renderPhotos(); addItem(); updatePageTitle(); recalcSubtotal();
@@ -1323,6 +1348,58 @@ function clearAll(skipAsk){
     document.getElementById('dateInput').value=t.getFullYear()+'-'+mm+'-'+dd;
     updateDateShow();
   })();
+}
+
+/* ---- 修改／重出舊單：輸入流水號，從台帳叫出內容 ---- */
+function setMachineLock(on){
+  ['machineInput','machineOther'].forEach(function(id){ var el=document.getElementById(id); if(el) el.disabled=!!on; });
+}
+function setSelectOrOther(selId,otherId,val){
+  var sel=document.getElementById(selId), other=document.getElementById(otherId);
+  var has=[].some.call(sel.options,function(o){ return o.value===val; });
+  if(has && val!=='__other__'){ sel.value=val; other.style.display='none'; other.value=''; }
+  else { sel.value='__other__'; other.style.display='block'; other.value=val; }
+}
+function loadRecord(){
+  var inp=document.getElementById('reloadInput'), btn=document.getElementById('reloadBtn');
+  var sn=inp.value.trim().replace(/\s/g,'');
+  // 允許省略補零：34-115-3 → 34-115-0003
+  var m=sn.match(/^(.+)-(\d{3})-(\d{1,4})$/);
+  if(!m){ showToast('請輸入流水號，例如 34-115-0003'); inp.focus(); return; }
+  sn=m[1]+'-'+m[2]+'-'+('000'+m[3]).slice(-4);
+  if(!CLOUD_URL){ showToast('沒有設定台帳網址'); return; }
+  var dirty=collectItems().length>0 && !(SERIAL.loaded);
+  if(dirty && !confirm('目前畫面上的內容會被清掉，換成流水號 '+sn+' 的資料。確定嗎？')) return;
+  btn.disabled=true; btn.textContent='查詢中…';
+  var timeout=new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('timeout')); },20000); });
+  Promise.race([fetch(CLOUD_URL+'?action=record&serial='+encodeURIComponent(sn)+'&t='+Date.now()).then(function(r){ return r.json(); }),timeout])
+  .then(function(j){
+    if(!j||!j.ok){ alert(j&&j.error==='not_found'?'台帳裡找不到流水號 '+sn+'。\n\n（換新版表單以前送出的舊單沒有流水號，無法用這個方式叫出。）':'查詢失敗，請稍後再試。'); return; }
+    var r=j.record;
+    clearAll(true);
+    inp.value=sn; inp.classList.add('reload-on');
+    setSelectOrOther('unitInput','unitOther',r.unit||'V20');
+    setSelectOrOther('machineInput','machineOther',j.machine);
+    var z=function(n){ return ('0'+n).slice(-2); };
+    document.getElementById('dateInput').value=r.y+'-'+z(r.m)+'-'+z(r.day); updateDateShow();
+    var mr=document.querySelector('input[name="method"][value="'+r.method+'"]'); if(mr) mr.checked=true;
+    document.getElementById('noteInput').value=r.note||'';
+    document.getElementById('itemList').innerHTML='';
+    (r.items.length?r.items:[{content:''}]).forEach(function(it){
+      addItem(it.content||'');
+      var rows=document.querySelectorAll('#itemList .item-row'), row=rows[rows.length-1];
+      var setv=function(cls,v){ var el=row.querySelector(cls); if(el) el.value=(v===undefined||v===null)?'':v; };
+      setv('.item-qty',it.qty||''); setv('.item-price',it.price||''); setv('.item-reason',it.reason); setv('.item-vendor',it.vendor);
+    });
+    recalcSubtotal(); updateItemSug(); updatePageTitle();
+    SERIAL={key:serialKey(),serial:sn,sent:true,loaded:true,hash:''};
+    SERIAL.hash=formHash();
+    setMachineLock(true); renderSerial();
+    HIST.key=''; fetchHistory();
+    showSentBar('已叫出流水號 '+sn+'（台帳目前的內容）。修改後按「輸出 PDF」。照片沒有存在台帳，需要的話請重新加入。',false);
+  })
+  .catch(function(){ alert('查詢失敗（可能是網路不穩），請稍後再試。'); })
+  .then(function(){ btn.disabled=false; btn.textContent='叫出'; });
 }
 
 /* 取得機具編號與名稱 */
@@ -1338,7 +1415,7 @@ function getMachine(){
 }
 
 /* 各機具常修項目（由舊維修紀錄統計，次數多的在前）*/
-var ITEM_SUG = {"01": ["拆裝工資", "維修工資", "工資", "高壓油管", "使動馬達", "入檔線", "前傾後仰修理包", "堆高機斗底板", "堆高機斗底板接焊", "堆高機斗底板接焊工資", "大燈開關", "小和尚頭", "拉桿", "油壓管", "油壓缸修理包", "油門線", "發電機", "線路檢修", "銅套", "電瓶", "預熱塞", "高壓管"], "12": ["工資", "油壓管", "水精", "煞車油", "上水管", "下水管", "噴射邦浦電磁閥", "手煞車線", "拆裝工資", "柴油手動邦浦", "柴油濾清器", "水箱總成", "水箱蓋", "煞車來令片", "煞車分邦", "煞車拆裝工資", "煞車鼓車修", "牛油", "發電機", "輪軸油封", "離合器分邦", "離合器總邦", "風扇葉", "高壓油管"], "16": ["新內胎", "補胎", "打黃油", "機油", "機油芯", "屋頂柱", "屋頂焊接", "拆裝工資", "方向機整理", "方向機油", "更換再生胎和內胎", "橫管厚板", "煞車分邦", "煞車油", "維修工資", "變速箱油", "LED燈", "LED石英燈", "L型板補焊", "N100電池", "N115電池", "三角台三角板萬象接頭焊接", "三角台直拉桿", "下水管及水精", "保養", "傳動軸油封", "傾卸固定板補焊", "傾卸心座", "內胎", "前輪剎車總成"], "17": ["自潤軸套", "輪動軸承", "T型油封", "儀表燈", "前輪軸拆裝分解組合工資", "升降邦浦", "墊片", "始動馬達", "小和尚頭", "油壓接頭及銅考克", "溫度表", "維修工資", "萬向軸承", "行星齒輪座油封座補修再生", "車心油封", "輪軸車心軸承座補修", "鐵直油接", "齒輪油"], "21": ["補胎", "發電機皮帶", "LED燈損壞", "再生胎和鋼圈", "冷氣皮帶", "冷氣配電盤整修", "前左輪框校正工資", "加油線磨損斷裂", "右前和左前調換輪胎", "工資", "左前拆裝胎", "換新胎", "換黑油", "新胎", "昇高油壓管破損", "更換再生胎", "更換再生胎含工資", "更換皮帶輪和水精和工資", "柴油手動泵總成", "柴油芯子", "水溫超溫", "水邦浦總成故障", "油管破損", "翻斗油管破裂", "補胎二洞", "轉向高壓油管破損", "風扇皮帶調整墮輪故障"], "25": ["油壓管", "怪手大道", "O型環", "二節小臂平板", "二節小臂板焊接", "冷媒", "啟動馬達", "工資", "怪手大道校正工資", "柴油芯子鐵", "膨脹開關", "透明軟管", "銅管牙插心", "鐵PF外牙塞頭", "鐵直", "電池與線路", "風扇組故障", "風箱口"], "26": ["怪手大道", "柴油芯子", "LED燈", "冷媒", "前面玻璃", "外出拆裝履帶調整組", "履帶調整分解修理", "彈簧", "怪手大道校正工資", "惰輪螺絲", "拆壓彈簧", "油壓管", "清洗冷氣", "調整履帶油封", "調整履帶牛油嘴", "調整履帶管及芯", "鐵PF外牙塞頭", "鐵直", "電磁閥"], "27": ["怪手大道", "怪手大道校正工資", "斗座拆裝", "鐵PF外牙塞頭", "鐵直"], "28": ["凸輪盤", "加油桿", "噴射邦浦修理包", "噴射邦浦拆裝", "噴射邦浦校正", "噴油柱", "活門", "配重"], "29": ["LED石英燈", "始動馬達", "柴油邦浦"], "30": ["車斗三腳架拆裝工資", "車斗三腳架", "車斗三腳架鐵套換", "車斗三腳架電焊", "車斗底鐵板換焊", "車斗後屏後鋼接焊"], "33": ["油壓管", "工資", "油壓快接公", "鐵直", "N120電池", "中古胎", "乾燥劑總成", "更換中古胎", "機油芯子", "水箱蓋", "發電機", "補胎", "變速箱入檔線", "變速箱選擇線", "鐵PF外牙凹塞頭"], "34": ["省力接頭", "鐵氟龍墊片", "鐵直", "油壓管", "車道柴油芯子", "PU管", "尼龍噴漆管", "O型環", "尼龍管接頭", "銅雙外牙", "鐵雙內牙接頭", "注油接頭", "銅切內牙三通", "銅塞頭", "銅安全閥", "銅雙內牙", "鐵PF外牙凹塞頭", "六角螺絲", "破碎機平刀片組", "空氣芯子", "考克小型", "銅卜申", "AIR高壓管", "O型環及油壓管", "TSO125濾心", "V20壓力Bar數儀錶", "V20壓力三向閥", "乾燥劑總成", "充電濾芯"], "35": ["工資", "束子", "油壓管", "24V繼電器", "保險絲座", "後照鏡", "拆裝工資", "水邦浦總成", "水龜型O型環", "油壓管布", "節溫器座正廠", "節溫氣蓋含節溫器正廠"], "_all": ["補胎", "油壓管", "工資", "鐵直", "新內胎", "省力接頭", "鐵氟龍墊片", "拆裝工資", "維修工資", "怪手大道", "車道柴油芯子", "發電機", "O型環", "PU管", "尼龍噴漆管", "高壓油管", "煞車油", "機油", "機油芯", "打黃油", "柴油芯子", "鐵PF外牙凹塞頭", "鐵雙內牙接頭", "尼龍管接頭", "銅雙外牙", "煞車分邦", "鐵PF外牙塞頭", "怪手大道校正工資", "銅雙內牙", "注油接頭", "銅安全閥", "銅塞頭", "銅切內牙三通", "預熱塞", "小和尚頭", "水精", "水箱蓋", "煞車來令片", "輪軸油封"], "06": ["軸承座-UCF207", "鋼刀片換新+工資", "更換中古實心胎"], "09": ["打黃油", "機油、齒輪油、機油芯、柴油芯、空氣芯清噴", "保養、打黃油", "啟動馬達1個", "機油、機油芯、空氣芯清噴、打黃油", "升降軸承4個、高壓油管(鐵)焊補", "打黃油、LED燈2個、指示燈1個、喇叭2個、開關1個", "機油、機油芯、空氣芯更新", "實心胎*2", "手剎車線更換", "水箱焊補", "機械式手壓柴油泵浦", "LED照明燈", "電池故障", "發電機皮帶", "風扇皮帶", "萬向轉頭及煞車線斷裂", "升降機油壓管斷裂", "前輪煞車系統"], "24": ["引擎腳緩衝墊+工資", "油壓管3/8*R1", "電池不蓄電"], "31": ["機油.機油芯.空氣芯.打黃油", "油水分離器", "左.右後輪"]};
+var ITEM_SUG = {"01": ["拆裝工資", "維修工資", "工資", "高壓油管", "使動馬達", "入檔線", "前傾後仰修理包", "堆高機斗底板", "堆高機斗底板接焊", "堆高機斗底板接焊工資", "大燈開關", "小和尚頭", "拉桿", "油壓管", "油壓缸修理包", "油門線", "發電機", "線路檢修", "銅套", "電瓶", "預熱塞", "高壓管"], "12": ["工資", "油壓管", "水精", "煞車油", "上水管", "下水管", "噴射邦浦電磁閥", "手煞車線", "拆裝工資", "柴油手動邦浦", "柴油濾清器", "水箱總成", "水箱蓋", "煞車來令片", "煞車分邦", "煞車拆裝工資", "煞車鼓車修", "牛油", "發電機", "輪軸油封", "離合器分邦", "離合器總邦", "風扇葉", "高壓油管"], "16": ["新內胎", "補胎", "打黃油", "機油", "機油芯", "屋頂柱", "屋頂焊接", "拆裝工資", "方向機整理", "方向機油", "更換再生胎和內胎", "橫管厚板", "煞車分邦", "煞車油", "維修工資", "變速箱油", "LED燈", "LED石英燈", "L型板補焊", "N100電池", "N115電池", "三角台三角板萬象接頭焊接", "三角台直拉桿", "下水管及水精", "保養", "傳動軸油封", "傾卸固定板補焊", "傾卸心座", "內胎", "前輪剎車總成"], "17": ["自潤軸套", "輪動軸承", "T型油封", "儀表燈", "前輪軸拆裝分解組合工資", "升降邦浦", "墊片", "始動馬達", "小和尚頭", "油壓接頭及銅考克", "溫度表", "維修工資", "萬向軸承", "行星齒輪座油封座補修再生", "車心油封", "輪軸車心軸承座補修", "鐵直油接", "齒輪油"], "21": ["補胎", "發電機皮帶", "LED燈損壞", "再生胎和鋼圈", "冷氣皮帶", "冷氣配電盤整修", "前左輪框校正工資", "加油線磨損斷裂", "右前和左前調換輪胎", "工資", "左前拆裝胎", "換新胎", "換黑油", "新胎", "昇高油壓管破損", "更換再生胎", "更換再生胎含工資", "更換皮帶輪和水精和工資", "柴油手動泵總成", "柴油芯子", "水溫超溫", "水邦浦總成故障", "油管破損", "翻斗油管破裂", "補胎二洞", "轉向高壓油管破損", "風扇皮帶調整墮輪故障"], "25": ["油壓管", "怪手大道", "O型環", "二節小臂平板", "二節小臂板焊接", "冷媒", "啟動馬達", "工資", "怪手大道校正工資", "柴油芯子鐵", "膨脹開關", "透明軟管", "銅管牙插心", "鐵PF外牙塞頭", "鐵直", "電池與線路", "風扇組故障", "風箱口"], "26": ["怪手大道", "柴油芯子", "LED燈", "冷媒", "前面玻璃", "外出拆裝履帶調整組", "履帶調整分解修理", "彈簧", "怪手大道校正工資", "惰輪螺絲", "拆壓彈簧", "油壓管", "清洗冷氣", "調整履帶油封", "調整履帶牛油嘴", "調整履帶管及芯", "鐵PF外牙塞頭", "鐵直", "電磁閥"], "27": ["怪手大道", "怪手大道校正工資", "斗座拆裝", "鐵PF外牙塞頭", "鐵直"], "28": ["凸輪盤", "加油桿", "噴射邦浦修理包", "噴射邦浦拆裝", "噴射邦浦校正", "噴油柱", "活門", "配重"], "29": ["LED石英燈", "始動馬達", "柴油邦浦"], "30": ["車斗三腳架拆裝工資", "車斗三腳架", "車斗三腳架鐵套換", "車斗三腳架電焊", "車斗底鐵板換焊", "車斗後屏後鋼接焊"], "33": ["油壓管", "工資", "油壓快接公", "鐵直", "N120電池", "中古胎", "乾燥劑總成", "更換中古胎", "機油芯子", "水箱蓋", "發電機", "補胎", "變速箱入檔線", "變速箱選擇線", "鐵PF外牙凹塞頭"], "34": ["省力接頭", "鐵氟龍墊片", "鐵直", "油壓管", "車道柴油芯子", "PU管", "尼龍噴漆管", "O型環", "尼龍管接頭", "銅雙外牙", "鐵雙內牙接頭", "注油接頭", "銅切內牙三通", "銅塞頭", "銅安全閥", "銅雙內牙", "鐵PF外牙凹塞頭", "六角螺絲", "破碎機平刀片組", "空氣芯子", "考克小型", "銅卜申", "AIR高壓管", "O型環及油壓管", "TSO125濾心", "V20壓力Bar數儀錶", "V20壓力三向閥", "乾燥劑總成", "充電濾芯"], "35": ["工資", "束子", "油壓管", "24V繼電器", "保險絲座", "後照鏡", "拆裝工資", "水邦浦總成", "水龜型O型環", "油壓管布", "節溫器座正廠", "節溫氣蓋含節溫器正廠"], "_all": ["補胎", "油壓管", "工資", "鐵直", "新內胎", "省力接頭", "鐵氟龍墊片", "拆裝工資", "維修工資", "怪手大道", "車道柴油芯子", "發電機", "O型環", "PU管", "尼龍噴漆管", "高壓油管", "煞車油", "機油", "機油芯", "打黃油", "柴油芯子", "鐵PF外牙凹塞頭", "鐵雙內牙接頭", "尼龍管接頭", "銅雙外牙", "煞車分邦", "鐵PF外牙塞頭", "怪手大道校正工資", "銅雙內牙", "注油接頭", "銅安全閥", "銅塞頭", "銅切內牙三通", "預熱塞", "小和尚頭", "水精", "水箱蓋", "煞車來令片", "輪軸油封"], "08": ["牙排改裝"], "06": ["軸承座-UCF207", "鋼刀片換新+工資", "更換中古實心胎"], "09": ["打黃油", "機油、齒輪油、機油芯、柴油芯、空氣芯清噴", "保養、打黃油", "啟動馬達1個", "機油、機油芯、空氣芯清噴、打黃油", "升降軸承4個、高壓油管(鐵)焊補", "打黃油、LED燈2個、指示燈1個、喇叭2個、開關1個", "機油、機油芯、空氣芯更新", "實心胎*2", "手剎車線更換", "水箱焊補", "機械式手壓柴油泵浦", "LED照明燈", "電池故障", "發電機皮帶", "風扇皮帶", "萬向轉頭及煞車線斷裂", "升降機油壓管斷裂", "前輪煞車系統"], "24": ["引擎腳緩衝墊+工資", "油壓管3/8*R1", "電池不蓄電"], "31": ["機油.機油芯.空氣芯.打黃油", "油水分離器", "左.右後輪"]};
 function itemPickOptions(){
   var mc=getMachine().no;
   var own=(ITEM_SUG[mc]||[]);
@@ -1496,9 +1573,10 @@ function fetchHistoryTry(attempt){
 function currentHist(){
   var hp=histParams();
   if(!hp||HIST.key!==hp.machine+'|'+hp.before||HIST.status!=='ok') return null;
-  return HIST.records;
+  return notSelf(HIST.records);
 }
-function currentMonth(){ return currentHist()?HIST.month:[]; }
+function notSelf(list){ var sn=SERIAL.sent&&SERIAL.serial; return sn?list.filter(function(r){ return r.serial!==sn; }):list; }
+function currentMonth(){ return currentHist()?notSelf(HIST.month):[]; }
 // 當年度（西元年＝民國年+1911）申請日期以前（含）的紀錄，不含結轉
 function currentYear(){ var h=currentHist(), hp=histParams(); if(!h||!hp) return []; var y=parseInt(hp.before.slice(0,4),10); return h.filter(function(r){ return r.y===y; }); }
 function rocYear(iso){ return (parseInt(iso.slice(0,4),10)-1911)+'年'; }
@@ -1922,7 +2000,12 @@ function confirmExport(){
     goBtn.textContent=IS_MOBILE?'確定轉出':'確定下載 PDF'; goBtn.disabled=false;
     closePreview();
     // 分享動作完成後才送雲端，避免拖慢分享視窗；這張已送出過就不再送
-    if(SERIAL.sent){ showSentBar('這張單（流水號 '+SERIAL.serial+'）已經送出過，這次只重新產生 PDF，不會再記到台帳。',true); }
+    if(SERIAL.sent){
+      if(SERIAL.hash && formHash()!==SERIAL.hash){
+        if(confirm('這張單的內容跟台帳裡的流水號 '+SERIAL.serial+' 不一樣。\n\n按「確定」：用這次的內容更新台帳（同一筆，不會多一筆）\n按「取消」：只產生 PDF，台帳不變')){ try{ sendToCloud('update'); }catch(e){} }
+        else showSentBar('只重新產生 PDF，台帳裡流水號 '+SERIAL.serial+' 維持原本的內容。',true);
+      } else showSentBar('這張單（流水號 '+SERIAL.serial+'）已經在台帳裡，這次只重新產生 PDF，不會再記一筆。',true);
+    }
     else { try{ sendToCloud(); }catch(e){} }
     // 台帳已多一筆，下次輸出重新查詢維修履歷
     HIST.key=''; HIST.status='idle';
@@ -1998,6 +2081,8 @@ document.getElementById('sentClose').addEventListener('click', hideSentBar);
 document.getElementById('machineInput').addEventListener('change', renderSerial);
 document.getElementById('dateInput').addEventListener('change', renderSerial);
 document.getElementById('pdfBtn').addEventListener('click', exportPDF);
+document.getElementById('reloadBtn').addEventListener('click', loadRecord);
+document.getElementById('reloadInput').addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); loadRecord(); } });
 document.getElementById('pvGo').addEventListener('click', confirmExport);
 document.getElementById('pvBack').addEventListener('click', closePreview);
 document.getElementById('dateInput').addEventListener('change', updateDateShow);
