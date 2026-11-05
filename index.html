@@ -1663,7 +1663,30 @@ function historyPagesHtml(hist, rp, machineStr, curSubtotal, monthRecs, yearRecs
   var mt=histTotals(monthRecs||[]); var ymTxt=rocYm(histParams().before);
   var yt=histTotals(yearRecs||[]); var yrTxt=rocYear(histParams().before);
   var blocks=[];   // 每段：{rows:數量, html}
-  groups.forEach(function(g){
+  // 一、本機近 10 次維修紀錄（不分項目，含工資）
+  var recent=(hist||[]).slice(0,HIST_N), rsum=0, rrows='', rlines=0;
+  recent.forEach(function(r,idx){
+    var amt=0, names=[], vend=[];
+    r.items.forEach(function(it){ amt+=Number(it.amount)||0; if(it.content) names.push(it.content); if(it.vendor&&vend.indexOf(it.vendor)<0) vend.push(it.vendor); });
+    rsum+=amt;
+    var txt=names.join('、'); rlines+=1+Math.floor(txt.length/40);
+    var gap=(idx+1<(hist||[]).length)?dayDiff(recDate(r),recDate(hist[idx+1]))+' 天':'—';
+    rrows+='<tr><td class="h-date">'+rocShort(r)+'</td>'+
+      '<td>'+escapeHtml(txt)+'</td>'+
+      '<td class="h-amt">'+(amt?nfmt(amt):'')+'</td>'+
+      '<td class="h-vendor">'+escapeHtml(vend.join('、'))+'</td>'+
+      '<td class="h-gap">'+gap+'</td></tr>';
+  });
+  blocks.push({rows:3+rlines, html:'<div class="hsec"><b>本機近 '+HIST_N+' 次維修紀錄</b><span class="hsec-n">（不分項目）</span>'+
+    '<div class="hsec-f">'+(recent.length
+      ? '共 '+(hist||[]).length+' 筆履歷，列出最近 '+recent.length+' 筆｜這 '+recent.length+' 筆合計 NT$ '+nfmt(Math.round(rsum))+'｜上次 '+rocShort(recent[0])
+      : '這台目前沒有維修履歷')+'</div></div>'+
+    (recent.length?'<table class="mtbl htbl"><tr class="mhead"><td class="h-date">日期</td><td>維修（更換）內容</td><td class="h-amt">金額</td><td class="h-vendor">廠商</td><td class="h-gap">距前次</td></tr>'+rrows+'</table>':'')});
+  // 二、同項目維修履歷
+  // 標題和第一段放在一起，避免標題單獨留在頁尾
+  var sameHead='<div style="font-size:17px;font-weight:900;margin:18px 0 2px;border-top:2px solid #333;padding-top:10px;">同項目維修履歷（近 '+HIST_N+' 次）<span style="font-size:13px;font-weight:400;">　每個本次項目的更換頻率；工資類不列</span></div>';
+  if(!groups.length) blocks.push({rows:3, html:sameHead+'<div style="font-size:14px;margin:6px 0;">本次項目皆為工資類，無需列出同項目履歷。</div>'});
+  groups.forEach(function(g,gi){
     var h=g.h;
     var head='<div class="hsec"><b>'+escapeHtml(h.cat)+'</b>'+
       (g.names.length?'<span class="hsec-n">（本次：'+g.names.map(escapeHtml).join('、')+'）</span>':'')+
@@ -1682,7 +1705,7 @@ function historyPagesHtml(hist, rp, machineStr, curSubtotal, monthRecs, yearRecs
         '<td class="h-gap">'+gap+'</td></tr>';
     });
     var tbl=h.occ.length?'<table class="mtbl htbl"><tr class="mhead"><td class="h-date">日期</td><td>維修（更換）內容</td><td class="h-amt">金額</td><td class="h-vendor">廠商</td><td class="h-gap">距前次</td></tr>'+rows+'</table>':'';
-    blocks.push({rows:3+h.occ.length, html:head+tbl});
+    blocks.push({rows:3+h.occ.length+(gi===0?2:0), html:(gi===0?sameHead:'')+head+tbl});
   });
   var sumHtml='<table class="mtbl hsum" style="margin-top:14px;">'+
       '<tr class="mhead"><td>機具 '+escapeHtml(machineStr)+' 當月／年度費用</td><td>維修金額</td></tr>'+
@@ -1702,9 +1725,9 @@ function historyPagesHtml(hist, rp, machineStr, curSubtotal, monthRecs, yearRecs
   pages.forEach(function(pg,pi){
     var last=pi===pages.length-1;
     html+='<div class="pdf-page"><div class="doc">'+
-      '<div style="font-size:20px;font-weight:900;margin-bottom:4px;">同項目維修履歷（近 '+HIST_N+' 次）'+(pi>0?'（續）':'')+'</div>'+
-      '<div style="font-size:14px;margin-bottom:6px;">機具編號：'+escapeHtml(machineStr)+'　　由新到舊排列，不含本次；工資類不列</div>'+
-      (pg.length?pg.join(''):(pi===0?'<div style="font-size:14px;margin:10px 0;">本次項目皆為工資類，無需列出履歷。</div>':''))+
+      '<div style="font-size:20px;font-weight:900;margin-bottom:4px;">維修履歷'+(pi>0?'（續）':'')+'</div>'+
+      '<div style="font-size:14px;margin-bottom:6px;">機具編號：'+escapeHtml(machineStr)+'　　由新到舊排列，不含本次</div>'+
+      pg.join('')+
       (last?sumHtml:'')+
     '</div></div>';
   });
@@ -1793,7 +1816,7 @@ function buildSheet(){
       (note?'<table style="margin-top:8px;"><tr><td><b>備註：</b>'+escapeHtml(note)+'</td></tr></table>':'')+
       (nPhotos?'<table style="margin-top:12px;"><tr><td class="th">維修照片'+(photos.length>nPhotos?'（共 '+photos.length+' 張，其餘見後頁）':'')+'</td></tr>'+
         '<tr><td class="photo-wrap">'+photoGridHtml(photos.slice(0,nPhotos),true)+'</td></tr></table>':'')+
-      (hist?'<div style="font-size:13px;margin-top:10px;">各維修項目的同項目履歷與當月費用，詳見下頁。</div>':'')+
+      (hist?'<div style="font-size:13px;margin-top:10px;">本機近 10 次維修紀錄、同項目履歷與當月／年度費用，詳見下頁。</div>':'')+
     '</div></div>';
   }
   // 量高度：超過一張 A4（794×1123）就少放兩張照片
